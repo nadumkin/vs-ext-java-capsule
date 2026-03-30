@@ -1,0 +1,139 @@
+{
+  "name": "vscode-ai-agent-assistant",
+  "displayName": "AI Agent Assistant",
+  "description": "VS Code assistant with full file context, related imports/tests, OpenRouter integration, and project actions.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "assistant",
+    "openrouter",
+    "copilot",
+    "chat"
+  ],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onView:aiAgentAssistant.chatView",
+    "onCommand:aiAgentAssistant.focusChat",
+    "onCommand:aiAgentAssistant.setApiKey",
+    "onCommand:aiAgentAssistant.clearChat",
+    "onCommand:aiAgentAssistant.refreshContext"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiAgentAssistant.focusChat",
+        "title": "AI Agent: Open Assistant"
+      },
+      {
+        "command": "aiAgentAssistant.setApiKey",
+        "title": "AI Agent: Set OpenRouter API Key"
+      },
+      {
+        "command": "aiAgentAssistant.clearChat",
+        "title": "AI Agent: Clear Chat"
+      },
+      {
+        "command": "aiAgentAssistant.refreshContext",
+        "title": "AI Agent: Refresh Context"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiAgentAssistantContainer",
+          "title": "Agent",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiAgentAssistantContainer": [
+        {
+          "type": "webview",
+          "id": "aiAgentAssistant.chatView",
+          "name": "AI Agent Chat"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "aiAgentAssistant.refreshContext",
+          "when": "view == aiAgentAssistant.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "aiAgentAssistant.setApiKey",
+          "when": "view == aiAgentAssistant.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "aiAgentAssistant.clearChat",
+          "when": "view == aiAgentAssistant.chatView",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AI Agent Assistant",
+      "properties": {
+        "aiAgentAssistant.openRouter.model": {
+          "type": "string",
+          "default": "openai/gpt-5.2",
+          "description": "OpenRouter model used for agent responses."
+        },
+        "aiAgentAssistant.openRouter.baseUrl": {
+          "type": "string",
+          "default": "https://openrouter.ai/api/v1/chat/completions",
+          "description": "OpenRouter chat completions endpoint."
+        },
+        "aiAgentAssistant.openRouter.requestTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "description": "OpenRouter request timeout in milliseconds."
+        },
+        "aiAgentAssistant.context.maxImportedFiles": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Maximum number of imported files included in the prompt."
+        },
+        "aiAgentAssistant.context.maxTests": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "description": "Maximum number of related test files included in the prompt."
+        },
+        "aiAgentAssistant.context.maxFileChars": {
+          "type": "number",
+          "default": 16000,
+          "minimum": 1000,
+          "description": "Maximum characters loaded from each context file."
+        },
+        "aiAgentAssistant.execution.requireConfirmation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before running shell commands or bash scripts."
+        },
+        "aiAgentAssistant.execution.commandTimeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "description": "Timeout for shell and bash execution tools in milliseconds."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "validate": "node --check src/extension.js && node --check src/ui/AssistantViewProvider.js && node --check src/agent/AgentRuntime.js && node --check src/agent/ContextCollector.js && node --check src/agent/OpenRouterClient.js && node --check src/agent/ToolExecutor.js"
+  }
+}
