@@ -13,6 +13,7 @@
 - `WebviewViewProvider` в отдельном activity bar контейнере `Agent`
 - хранение OpenRouter API key в `VS Code Secret Storage`
 - agent loop через OpenRouter tool calling
+- настраиваемый лимит итераций с паузой и продолжением без потери прогресса
 - сборка prompt из:
   - активного файла
   - выделения в активном файле
@@ -28,6 +29,7 @@
   - `run_shell_command`
   - `run_bash_script`
   - `read_terminal_output`
+- отдельные визуальные блоки в чате для shell/bash команд и их вывода
 
 ## Ограничения текущей версии
 
@@ -51,6 +53,7 @@
 - `aiAgentAssistant.context.maxImportedFiles`
 - `aiAgentAssistant.context.maxTests`
 - `aiAgentAssistant.context.maxFileChars`
+- `aiAgentAssistant.agent.maxIterations`
 - `aiAgentAssistant.execution.requireConfirmation`
 - `aiAgentAssistant.execution.commandTimeoutMs`
 

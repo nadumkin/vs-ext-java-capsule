@@ -1,4 +1,5 @@
 const vscode = require("vscode");
+
 const DEFAULT_PROMPT =
   "Проанализируй текущий контекст и выполни самое полезное следующее действие.";
 
@@ -14,6 +15,9 @@ class AssistantViewProvider {
     this.busy = false;
     this.status = "";
     this.contextPreview = "Откройте файл с классом, чтобы подготовить контекст.";
+    this.iterationLimit = this.getConfiguredIterationLimit();
+    this.pendingContinuation = undefined;
+    this.continuationMessage = "";
   }
 
   async resolveWebviewView(webviewView) {
@@ -36,6 +40,9 @@ class AssistantViewProvider {
         case "submitPrompt":
           await this.handleSubmitPrompt(message.prompt);
           break;
+        case "continueRun":
+          await this.handleContinueRun();
+          break;
         case "clearChat":
           this.clearChat();
           break;
@@ -43,6 +50,9 @@ class AssistantViewProvider {
           if (await this.openRouterClient.promptAndStoreApiKey()) {
             this.postInfo("OpenRouter API key сохранен.");
           }
+          break;
+        case "setIterationLimitPrompt":
+          await this.promptAndStoreIterationLimit();
           break;
         case "refreshContext":
           await this.refreshContextPreview();
@@ -62,7 +72,43 @@ class AssistantViewProvider {
   clearChat() {
     this.messages = [];
     this.status = "";
+    this.pendingContinuation = undefined;
+    this.continuationMessage = "";
     this.postState();
+  }
+
+  async promptAndStoreIterationLimit() {
+    const entered = await vscode.window.showInputBox({
+      title: "Agent Iteration Limit",
+      prompt: "Введите максимальное количество итераций агента на один прогон.",
+      ignoreFocusOut: true,
+      value: String(this.iterationLimit),
+      validateInput: (value) => {
+        const normalized = Number(value);
+        if (!Number.isFinite(normalized) || normalized < 1 || normalized > 100) {
+          return "Введите число от 1 до 100.";
+        }
+        return undefined;
+      },
+    });
+
+    if (!entered) {
+      return false;
+    }
+
+    const normalized = this.normalizeIterationLimit(entered);
+    const target = vscode.workspace.workspaceFolders?.length
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+
+    await vscode.workspace
+      .getConfiguration("aiAgentAssistant")
+      .update("agent.maxIterations", normalized, target);
+
+    this.iterationLimit = normalized;
+    this.postInfo(`Лимит итераций обновлен: ${normalized}`);
+    this.postState();
+    return true;
   }
 
   async refreshContextPreview() {
@@ -81,6 +127,9 @@ class AssistantViewProvider {
       return;
     }
 
+    this.pendingContinuation = undefined;
+    this.continuationMessage = "";
+
     const prompt = String(rawPrompt || "").trim() || DEFAULT_PROMPT;
     this.messages.push(this.createMessage("user", prompt));
     this.busy = true;
@@ -88,26 +137,17 @@ class AssistantViewProvider {
     this.postState();
 
     try {
-      const result = await this.runtime.runTurn({
+      await this.runAgentTurn({
         prompt,
         history: this.messages
+          .slice(0, -1)
           .filter((message) => message.role === "user" || message.role === "assistant")
           .map((message) => ({
             role: message.role,
             content: message.content,
           })),
-        onStatus: (status) => {
-          this.status = status;
-          this.postState();
-        },
-        onToolEvent: (event) => {
-          this.messages.push(this.createMessage("system", event.summary));
-          this.postState();
-        },
+        iterationLimit: this.iterationLimit,
       });
-
-      this.contextPreview = result.contextPreview;
-      this.messages.push(this.createMessage("assistant", result.assistantMessage));
     } catch (error) {
       this.messages.push(
         this.createMessage(
@@ -122,16 +162,104 @@ class AssistantViewProvider {
     }
   }
 
+  async handleContinueRun() {
+    if (this.busy || !this.pendingContinuation) {
+      return;
+    }
+
+    const continuationState = this.pendingContinuation;
+    const continuationMessage = this.continuationMessage;
+    this.pendingContinuation = undefined;
+    this.continuationMessage = "";
+    this.busy = true;
+    this.status = "Возобновляю агентную сессию...";
+    this.postState();
+
+    try {
+      await this.runAgentTurn({
+        iterationLimit: this.iterationLimit,
+        continuationState,
+      });
+    } catch (error) {
+      this.pendingContinuation = continuationState;
+      this.continuationMessage = continuationMessage;
+      this.messages.push(
+        this.createMessage(
+          "assistant",
+          `Ошибка во время продолжения:\n${error.message}`
+        )
+      );
+    } finally {
+      this.busy = false;
+      this.status = "";
+      this.postState();
+    }
+  }
+
+  async runAgentTurn({ prompt = "", history = [], iterationLimit, continuationState }) {
+    const result = await this.runtime.runTurn({
+      prompt,
+      history,
+      iterationLimit,
+      continuationState,
+      onStatus: (status) => {
+        this.status = status;
+        this.postState();
+      },
+      onToolEvent: (event) => {
+        this.handleToolEvent(event);
+      },
+    });
+
+    this.contextPreview = result.contextPreview || this.contextPreview;
+
+    if (result.status === "completed") {
+      this.pendingContinuation = undefined;
+      this.continuationMessage = "";
+      this.messages.push(this.createMessage("assistant", result.assistantMessage));
+      return;
+    }
+
+    if (result.status === "needsContinuation") {
+      this.pendingContinuation = result.continuationState;
+      this.continuationMessage = result.continuationMessage;
+      this.messages.push(this.createMessage("system", result.continuationMessage));
+    }
+  }
+
   postInfo(text) {
     this.messages.push(this.createMessage("system", text));
     this.postState();
   }
 
-  createMessage(role, content) {
+  handleToolEvent(event) {
+    if (event.displayMessage) {
+      this.upsertMessage(this.createMessage("command", "", event.displayMessage));
+    } else if (event.summary) {
+      this.messages.push(this.createMessage("system", event.summary));
+    }
+    this.postState();
+  }
+
+  upsertMessage(message) {
+    const index = this.messages.findIndex((item) => item.id === message.id);
+    if (index === -1) {
+      this.messages.push(message);
+      return;
+    }
+
+    this.messages[index] = {
+      ...this.messages[index],
+      ...message,
+    };
+  }
+
+  createMessage(role, content, extras = {}) {
     return {
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       role,
       content,
+      ...extras,
     };
   }
 
@@ -147,8 +275,29 @@ class AssistantViewProvider {
         status: this.status,
         contextPreview: this.contextPreview,
         messages: this.messages,
+        canContinue: Boolean(this.pendingContinuation),
+        continuationMessage: this.continuationMessage,
+        iterationLimit: this.iterationLimit,
       },
     });
+  }
+
+  getConfiguredIterationLimit() {
+    const configured = vscode.workspace
+      .getConfiguration("aiAgentAssistant")
+      .get("agent.maxIterations", 8);
+    return this.normalizeIterationLimit(configured, 8);
+  }
+
+  reloadConfiguredIterationLimit() {
+    this.iterationLimit = this.getConfiguredIterationLimit();
+    this.postState();
+  }
+
+  normalizeIterationLimit(value, fallback) {
+    const base = Number(value);
+    const normalized = Number.isFinite(base) ? base : fallback || 8;
+    return Math.max(1, Math.min(100, Math.round(normalized)));
   }
 
   getHtml(webview) {
@@ -183,6 +332,7 @@ class AssistantViewProvider {
         <div class="toolbar">
           <button id="refreshContext" class="ghost">Контекст</button>
           <button id="setApiKey" class="ghost">API key</button>
+          <button id="setIterationLimitPrompt" class="ghost">Итерации</button>
           <button id="clearChat" class="ghost">Очистить</button>
         </div>
       </header>
@@ -195,6 +345,10 @@ class AssistantViewProvider {
       <main id="messages" class="messages"></main>
 
       <footer class="composer">
+        <div id="continuationBanner" class="continuation-banner" hidden>
+          <div id="continuationText" class="continuation-text"></div>
+          <button id="continueRun" class="ghost highlight">Продолжить</button>
+        </div>
         <label class="composer-label" for="prompt">Запрос к агенту</label>
         <textarea
           id="prompt"

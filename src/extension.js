@@ -36,11 +36,19 @@ function activate(context) {
       await openRouterClient.promptAndStoreApiKey();
       await viewProvider.refreshContextPreview();
     }),
+    vscode.commands.registerCommand("aiAgentAssistant.setIterationLimit", async () => {
+      await viewProvider.promptAndStoreIterationLimit();
+    }),
     vscode.commands.registerCommand("aiAgentAssistant.clearChat", () => {
       viewProvider.clearChat();
     }),
     vscode.commands.registerCommand("aiAgentAssistant.refreshContext", async () => {
       await viewProvider.refreshContextPreview();
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("aiAgentAssistant.agent.maxIterations")) {
+        viewProvider.reloadConfiguredIterationLimit();
+      }
     }),
     vscode.window.onDidChangeActiveTextEditor(async () => {
       await viewProvider.refreshContextPreview();

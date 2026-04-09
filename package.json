@@ -23,6 +23,7 @@
     "onView:aiAgentAssistant.chatView",
     "onCommand:aiAgentAssistant.focusChat",
     "onCommand:aiAgentAssistant.setApiKey",
+    "onCommand:aiAgentAssistant.setIterationLimit",
     "onCommand:aiAgentAssistant.clearChat",
     "onCommand:aiAgentAssistant.refreshContext"
   ],
@@ -35,6 +36,10 @@
       {
         "command": "aiAgentAssistant.setApiKey",
         "title": "AI Agent: Set OpenRouter API Key"
+      },
+      {
+        "command": "aiAgentAssistant.setIterationLimit",
+        "title": "AI Agent: Set Iteration Limit"
       },
       {
         "command": "aiAgentAssistant.clearChat",
@@ -76,9 +81,14 @@
           "group": "navigation@2"
         },
         {
-          "command": "aiAgentAssistant.clearChat",
+          "command": "aiAgentAssistant.setIterationLimit",
           "when": "view == aiAgentAssistant.chatView",
           "group": "navigation@3"
+        },
+        {
+          "command": "aiAgentAssistant.clearChat",
+          "when": "view == aiAgentAssistant.chatView",
+          "group": "navigation@4"
         }
       ]
     },
@@ -118,6 +128,12 @@
           "default": 16000,
           "minimum": 1000,
           "description": "Maximum characters loaded from each context file."
+        },
+        "aiAgentAssistant.agent.maxIterations": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "description": "Default maximum number of agent iterations before pause/continue is offered."
         },
         "aiAgentAssistant.execution.requireConfirmation": {
           "type": "boolean",

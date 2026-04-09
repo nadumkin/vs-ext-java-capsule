@@ -121,7 +121,7 @@ class ToolExecutor {
     ];
   }
 
-  async executeToolCall(toolCall) {
+  async executeToolCall(toolCall, hooks = {}) {
     const name = toolCall?.function?.name;
     const id = toolCall?.id || toolCall?.toolCallId;
     const args = parseArguments(toolCall?.function?.arguments);
@@ -144,10 +144,10 @@ class ToolExecutor {
         result = await this.replaceActiveFile(args);
         break;
       case "run_shell_command":
-        result = await this.runShellCommand(args);
+        result = await this.runShellCommand(args, hooks);
         break;
       case "run_bash_script":
-        result = await this.runBashScript(args);
+        result = await this.runBashScript(args, hooks);
         break;
       case "read_terminal_output":
         result = await this.readTerminalOutput(args);
@@ -156,14 +156,17 @@ class ToolExecutor {
         throw new Error(`Неизвестный tool call: ${name}`);
     }
 
+    const { displayMessage, ...toolPayload } = result;
+
     return {
       toolMessage: {
         role: "tool",
         tool_call_id: id,
         name,
-        content: JSON.stringify(result, null, 2),
+        content: JSON.stringify(toolPayload, null, 2),
       },
-      summary: result.summary || `${name} выполнен.`,
+      summary: toolPayload.summary || `${name} выполнен.`,
+      displayMessage,
     };
   }
 
@@ -282,11 +285,13 @@ class ToolExecutor {
     };
   }
 
-  async runShellCommand(args) {
+  async runShellCommand(args, hooks = {}) {
     const command = String(args.command || "").trim();
     if (!command) {
       throw new Error("run_shell_command требует непустой command.");
     }
+
+    const cwd = await this.resolveCwd(args.cwd);
 
     const allowed = await this.confirmExecution("shell-команду", command);
     if (!allowed) {
@@ -294,19 +299,49 @@ class ToolExecutor {
         ok: false,
         cancelled: true,
         summary: `Запуск команды отменен пользователем: ${command}`,
+        displayMessage: createCommandDisplayMessage({
+          title: "Shell command",
+          commandText: command,
+          cwd,
+          status: "cancelled",
+          summary: "Запуск команды отменен пользователем.",
+        }),
       };
     }
 
-    return this.executeProcess({
+    const execution = await this.executeProcess({
       label: command,
       command,
-      cwd: await this.resolveCwd(args.cwd),
+      cwd,
       timeoutMs: clampCommandTimeout(args.timeoutMs),
       shell: true,
+      onUpdate: hooks.onEvent,
+      title: "Shell command",
+      commandText: command,
     });
+
+    return {
+      ...execution,
+      displayMessage: createCommandDisplayMessage({
+        title: "Shell command",
+        commandText: command,
+        cwd: execution.cwd,
+        sessionId: execution.sessionId,
+        exitCode: execution.exitCode,
+        timedOut: execution.timedOut,
+        stdout: execution.stdout,
+        stderr: execution.stderr,
+        status: execution.timedOut
+          ? "timeout"
+          : execution.exitCode === 0
+            ? "success"
+            : "error",
+        summary: execution.summary,
+      }),
+    };
   }
 
-  async runBashScript(args) {
+  async runBashScript(args, hooks = {}) {
     const script = String(args.script || "").trim();
     if (!script) {
       throw new Error("run_bash_script требует непустой script.");
@@ -316,23 +351,55 @@ class ToolExecutor {
       throw new Error("run_bash_script не поддерживается на Windows без bash.");
     }
 
+    const cwd = await this.resolveCwd(args.cwd);
+
     const allowed = await this.confirmExecution("bash-скрипт", script);
     if (!allowed) {
       return {
         ok: false,
         cancelled: true,
         summary: "Запуск bash-скрипта отменен пользователем.",
+        displayMessage: createCommandDisplayMessage({
+          title: "Bash script",
+          commandText: script,
+          cwd,
+          status: "cancelled",
+          summary: "Запуск bash-скрипта отменен пользователем.",
+        }),
       };
     }
 
-    return this.executeProcess({
+    const execution = await this.executeProcess({
       label: "bash script",
       command: "/bin/bash",
       args: ["-lc", script],
-      cwd: await this.resolveCwd(args.cwd),
+      cwd,
       timeoutMs: clampCommandTimeout(args.timeoutMs),
       shell: false,
+      onUpdate: hooks.onEvent,
+      title: "Bash script",
+      commandText: script,
     });
+
+    return {
+      ...execution,
+      displayMessage: createCommandDisplayMessage({
+        title: "Bash script",
+        commandText: script,
+        cwd: execution.cwd,
+        sessionId: execution.sessionId,
+        exitCode: execution.exitCode,
+        timedOut: execution.timedOut,
+        stdout: execution.stdout,
+        stderr: execution.stderr,
+        status: execution.timedOut
+          ? "timeout"
+          : execution.exitCode === 0
+            ? "success"
+            : "error",
+        summary: execution.summary,
+      }),
+    };
   }
 
   async readTerminalOutput(args) {
@@ -357,10 +424,30 @@ class ToolExecutor {
       exitCode: session.exitCode,
       output,
       summary: `Прочитан вывод managed terminal session #${session.id}`,
+      displayMessage: createCommandDisplayMessage({
+        title: "Managed terminal output",
+        commandText: session.command,
+        cwd: session.cwd,
+        sessionId: session.id,
+        exitCode: session.exitCode,
+        output,
+        status: "info",
+        summary: `Последний вывод session #${session.id}`,
+      }),
     };
   }
 
-  async executeProcess({ label, command, args = [], cwd, timeoutMs, shell }) {
+  async executeProcess({
+    label,
+    command,
+    args = [],
+    cwd,
+    timeoutMs,
+    shell,
+    onUpdate,
+    title,
+    commandText,
+  }) {
     const sessionId = this.nextSessionId++;
     this.outputChannel.appendLine(`[${sessionId}] ${label}`);
 
@@ -374,13 +461,39 @@ class ToolExecutor {
       timedOut: false,
     };
     this.commandSessions.set(sessionId, session);
+    const messageId = `command-session-${sessionId}`;
 
     return new Promise((resolve, reject) => {
+      let lastUpdateAt = 0;
+      const emitUpdate = (status, summary) => {
+        if (!onUpdate) {
+          return;
+        }
+
+        onUpdate({
+          displayMessage: createCommandDisplayMessage({
+            id: messageId,
+            title: title || "Command",
+            commandText: commandText || session.command,
+            cwd,
+            sessionId,
+            exitCode: session.exitCode,
+            timedOut: session.timedOut,
+            stdout: session.stdout,
+            stderr: session.stderr,
+            status,
+            summary,
+          }),
+        });
+      };
+
       const child = spawn(command, args, {
         cwd,
         shell,
         env: process.env,
       });
+
+      emitUpdate("running", `Команда запущена: ${session.command}`);
 
       const timeout = setTimeout(() => {
         session.timedOut = true;
@@ -391,22 +504,43 @@ class ToolExecutor {
         const text = chunk.toString();
         session.stdout += text;
         this.outputChannel.append(text);
+        const now = Date.now();
+        if (now - lastUpdateAt >= 150) {
+          lastUpdateAt = now;
+          emitUpdate("running", `Команда выполняется: ${session.command}`);
+        }
       });
 
       child.stderr.on("data", (chunk) => {
         const text = chunk.toString();
         session.stderr += text;
         this.outputChannel.append(text);
+        const now = Date.now();
+        if (now - lastUpdateAt >= 150) {
+          lastUpdateAt = now;
+          emitUpdate("running", `Команда выполняется: ${session.command}`);
+        }
       });
 
       child.on("error", (error) => {
         clearTimeout(timeout);
+        emitUpdate("error", `Ошибка запуска команды: ${error.message}`);
         reject(error);
       });
 
       child.on("close", (code) => {
         clearTimeout(timeout);
         session.exitCode = code;
+        emitUpdate(
+          session.timedOut
+            ? "timeout"
+            : code === 0
+              ? "success"
+              : "error",
+          session.timedOut
+            ? `Команда остановлена по timeout: ${session.command}`
+            : `Команда завершена с кодом ${code}: ${session.command}`
+        );
 
         resolve({
           ok: code === 0 && !session.timedOut,
@@ -604,6 +738,47 @@ function findPlainTextMatches({ content, query, maxMatches }) {
   }
 
   return matches;
+}
+
+function createCommandDisplayMessage({
+  id,
+  title,
+  commandText,
+  cwd,
+  sessionId,
+  exitCode,
+  timedOut,
+  stdout,
+  stderr,
+  output,
+  status,
+  summary,
+}) {
+  return {
+    id,
+    role: "command",
+    kind: "command",
+    title,
+    commandText,
+    cwd,
+    sessionId,
+    exitCode,
+    timedOut: Boolean(timedOut),
+    stdout: truncateForDisplay(stdout),
+    stderr: truncateForDisplay(stderr),
+    output: truncateForDisplay(output),
+    status: status || "info",
+    summary,
+  };
+}
+
+function truncateForDisplay(value, maxChars = 12000) {
+  const text = String(value || "");
+  if (text.length <= maxChars) {
+    return text;
+  }
+
+  return `${text.slice(0, maxChars)}\n\n[truncated ${text.length - maxChars} chars]`;
 }
 
 module.exports = {

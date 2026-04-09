@@ -4,24 +4,41 @@ class AgentRuntime {
     this.openRouterClient = openRouterClient;
     this.toolExecutor = toolExecutor;
     this.outputChannel = outputChannel;
-    this.maxIterations = 8;
   }
 
   async previewContext() {
     return this.contextCollector.previewContext();
   }
 
-  async runTurn({ prompt, history, onStatus, onToolEvent }) {
-    onStatus?.("Собираю файл, импорты и тесты...");
-    const context = await this.contextCollector.collectContext(prompt);
-    const messages = this.buildMessages(history, context.promptText);
-    const tools = this.toolExecutor.getToolDefinitions();
+  async runTurn({
+    prompt,
+    history,
+    iterationLimit,
+    continuationState,
+    onStatus,
+    onToolEvent,
+  }) {
+    let contextPreview = continuationState?.contextPreview || "";
+    let messages;
 
-    for (let iteration = 0; iteration < this.maxIterations; iteration += 1) {
+    if (continuationState?.messages?.length) {
+      messages = cloneMessages(continuationState.messages);
+      onStatus?.("Продолжаю агентную сессию с сохраненного шага...");
+    } else {
+      onStatus?.("Собираю файл, импорты и тесты...");
+      const context = await this.contextCollector.collectContext(prompt);
+      messages = this.buildMessages(history, context.promptText);
+      contextPreview = context.summaryText;
+    }
+
+    const tools = this.toolExecutor.getToolDefinitions();
+    const maxIterations = normalizeIterationLimit(iterationLimit);
+
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
       onStatus?.(
         iteration === 0
           ? "Отправляю контекст в OpenRouter..."
-          : `Продолжаю agent loop (${iteration + 1}/${this.maxIterations})...`
+          : `Продолжаю agent loop (${iteration + 1}/${maxIterations})...`
       );
 
       const response = await this.openRouterClient.createChatCompletion({
@@ -40,33 +57,44 @@ class AgentRuntime {
 
       if (toolCalls.length === 0) {
         return {
+          status: "completed",
           assistantMessage:
             extractText(assistantMessage.content) || "Готово. Изменения применены.",
-          contextPreview: context.summaryText,
+          contextPreview,
         };
       }
 
-      if (extractText(assistantMessage.content)) {
+      const assistantText = extractText(assistantMessage.content);
+      if (assistantText) {
         onToolEvent?.({
-          summary: `Промежуточный ответ агента: ${extractText(
-            assistantMessage.content
-          )}`,
+          summary: `Промежуточный ответ агента: ${assistantText}`,
         });
       }
 
       for (const toolCall of toolCalls) {
         onStatus?.(`Выполняю инструмент ${toolCall.function?.name}...`);
-        const result = await this.toolExecutor.executeToolCall(toolCall);
+        const result = await this.toolExecutor.executeToolCall(toolCall, {
+          onEvent: (event) => {
+            onToolEvent?.(event);
+          },
+        });
         messages.push(result.toolMessage);
         onToolEvent?.({
           summary: result.summary,
+          displayMessage: result.displayMessage,
         });
       }
     }
 
-    throw new Error(
-      `Agent loop остановлен: достигнут лимит ${this.maxIterations} итераций.`
-    );
+    return {
+      status: "needsContinuation",
+      contextPreview,
+      continuationMessage: `Достигнут лимит ${maxIterations} итераций. Можно продолжить без потери прогресса.`,
+      continuationState: {
+        messages: cloneMessages(messages),
+        contextPreview,
+      },
+    };
   }
 
   buildMessages(history, currentPrompt) {
@@ -98,6 +126,14 @@ class AgentRuntime {
   }
 }
 
+function normalizeIterationLimit(value) {
+  return Math.max(1, Math.min(100, Number(value) || 1));
+}
+
+function cloneMessages(messages) {
+  return JSON.parse(JSON.stringify(messages || []));
+}
+
 function normalizeAssistantMessage(message) {
   return {
     role: "assistant",
@@ -113,7 +149,15 @@ function extractText(content) {
 
   if (Array.isArray(content)) {
     return content
-      .map((item) => (typeof item?.text === "string" ? item.text : ""))
+      .map((item) => {
+        if (typeof item?.text === "string") {
+          return item.text;
+        }
+        if (typeof item?.content === "string") {
+          return item.content;
+        }
+        return "";
+      })
       .join("")
       .trim();
   }
