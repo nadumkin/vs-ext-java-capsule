@@ -10,6 +10,14 @@ class AgentRuntime {
     return this.contextCollector.previewContext();
   }
 
+  async applyPendingChanges() {
+    return this.toolExecutor.applyPendingChanges();
+  }
+
+  async rejectPendingChanges() {
+    return this.toolExecutor.rejectPendingChanges();
+  }
+
   async runTurn({
     prompt,
     history,
@@ -37,7 +45,7 @@ class AgentRuntime {
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
       onStatus?.(
         iteration === 0
-          ? "Отправляю контекст в OpenRouter..."
+          ? "Отправляю контекст в LLM endpoint..."
           : `Продолжаю agent loop (${iteration + 1}/${maxIterations})...`
       );
 
@@ -48,7 +56,7 @@ class AgentRuntime {
       const choice = response?.choices?.[0];
 
       if (!choice?.message) {
-        throw new Error("OpenRouter вернул ответ без choices[0].message.");
+        throw new Error("LLM endpoint вернул ответ без choices[0].message.");
       }
 
       const assistantMessage = normalizeAssistantMessage(choice.message);
@@ -71,7 +79,9 @@ class AgentRuntime {
         });
       }
 
-      for (const toolCall of toolCalls) {
+      let approvalRequested = false;
+      for (let index = 0; index < toolCalls.length; index += 1) {
+        const toolCall = toolCalls[index];
         onStatus?.(`Выполняю инструмент ${toolCall.function?.name}...`);
         const result = await this.toolExecutor.executeToolCall(toolCall, {
           onEvent: (event) => {
@@ -83,6 +93,26 @@ class AgentRuntime {
           summary: result.summary,
           displayMessage: result.displayMessage,
         });
+
+        if (result.requiresApproval) {
+          approvalRequested = true;
+          const nextToolName = toolCalls[index + 1]?.function?.name;
+          if (!nextToolName || !this.toolExecutor.isDeferredFileChangeTool(nextToolName)) {
+            break;
+          }
+        }
+      }
+
+      if (approvalRequested) {
+        return {
+          status: "needsApproval",
+          contextPreview,
+          approvalMessage: this.toolExecutor.getPendingApprovalSummary(),
+          approvalState: {
+            messages: cloneMessages(messages),
+            contextPreview,
+          },
+        };
       }
     }
 
@@ -113,6 +143,8 @@ class AgentRuntime {
           "Use tools to read files, modify files, search the workspace, and run commands.",
           "Prefer actual tool execution over describing intended edits.",
           "When editing files, write the complete final content.",
+          "File changes may be staged for user approval before they are applied.",
+          "Do not assume staged changes are already applied until a later system message confirms approval.",
           "Avoid destructive or risky actions unless they are clearly necessary.",
           "After tool usage, provide a concise final answer summarizing what changed and any next verification step.",
         ].join(" "),

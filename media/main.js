@@ -6,48 +6,105 @@
     contextPreview: "",
     messages: [],
     canContinue: false,
+    canApprove: false,
+    approvalMessage: "",
     continuationMessage: "",
     iterationLimit: 8,
+    modelName: "",
+    baseUrl: "",
+    autoApplyChanges: false,
+    hasStoredApiKey: false,
   };
+  let settingsOpen = false;
+  let clearStoredApiKey = false;
 
   const elements = {
     messages: document.getElementById("messages"),
     prompt: document.getElementById("prompt"),
     sendPrompt: document.getElementById("sendPrompt"),
     clearChat: document.getElementById("clearChat"),
-    setApiKey: document.getElementById("setApiKey"),
-    setIterationLimitPrompt: document.getElementById("setIterationLimitPrompt"),
+    openSettings: document.getElementById("openSettings"),
     refreshContext: document.getElementById("refreshContext"),
     status: document.getElementById("status"),
     contextPreview: document.getElementById("contextPreview"),
+    currentModel: document.getElementById("currentModel"),
+    currentEndpoint: document.getElementById("currentEndpoint"),
+    apiKeyStatus: document.getElementById("apiKeyStatus"),
+    approvalBanner: document.getElementById("approvalBanner"),
+    approvalText: document.getElementById("approvalText"),
+    applyPendingChanges: document.getElementById("applyPendingChanges"),
+    rejectPendingChanges: document.getElementById("rejectPendingChanges"),
     continuationBanner: document.getElementById("continuationBanner"),
     continuationText: document.getElementById("continuationText"),
     continueRun: document.getElementById("continueRun"),
+    settingsModal: document.getElementById("settingsModal"),
+    closeSettings: document.getElementById("closeSettings"),
+    cancelSettings: document.getElementById("cancelSettings"),
+    saveSettings: document.getElementById("saveSettings"),
+    settingsBaseUrl: document.getElementById("settingsBaseUrl"),
+    settingsModel: document.getElementById("settingsModel"),
+    settingsApiKey: document.getElementById("settingsApiKey"),
+    settingsApiKeyHint: document.getElementById("settingsApiKeyHint"),
+    settingsClearApiKeyRow: document.getElementById("settingsClearApiKeyRow"),
+    settingsClearApiKey: document.getElementById("settingsClearApiKey"),
+    settingsIterationLimit: document.getElementById("settingsIterationLimit"),
+    settingsAutoApplyChanges: document.getElementById("settingsAutoApplyChanges"),
   };
 
   window.addEventListener("message", (event) => {
-    if (event.data?.type !== "state") {
+    if (event.data?.type === "state") {
+      Object.assign(state, event.data.payload);
+      render();
       return;
     }
 
-    Object.assign(state, event.data.payload);
-    render();
+    if (event.data?.type === "openSettings") {
+      openSettingsModal();
+    }
   });
 
   elements.sendPrompt.addEventListener("click", submitPrompt);
   elements.clearChat.addEventListener("click", () =>
     vscode.postMessage({ type: "clearChat" })
   );
-  elements.setApiKey.addEventListener("click", () =>
-    vscode.postMessage({ type: "setApiKey" })
-  );
-  elements.setIterationLimitPrompt.addEventListener("click", () =>
-    vscode.postMessage({ type: "setIterationLimitPrompt" })
-  );
+  elements.openSettings.addEventListener("click", openSettingsModal);
   elements.refreshContext.addEventListener("click", () =>
     vscode.postMessage({ type: "refreshContext" })
   );
+  elements.applyPendingChanges.addEventListener("click", () =>
+    vscode.postMessage({ type: "applyPendingChanges" })
+  );
+  elements.rejectPendingChanges.addEventListener("click", () =>
+    vscode.postMessage({ type: "rejectPendingChanges" })
+  );
   elements.continueRun.addEventListener("click", continueRun);
+  elements.closeSettings.addEventListener("click", closeSettingsModal);
+  elements.cancelSettings.addEventListener("click", closeSettingsModal);
+  elements.saveSettings.addEventListener("click", saveSettings);
+  elements.settingsApiKey.addEventListener("input", () => {
+    if (elements.settingsApiKey.value) {
+      clearStoredApiKey = false;
+      elements.settingsClearApiKey.checked = false;
+    }
+  });
+  elements.settingsClearApiKey.addEventListener("change", () => {
+    clearStoredApiKey = Boolean(elements.settingsClearApiKey.checked);
+    if (clearStoredApiKey) {
+      elements.settingsApiKey.value = "";
+    }
+  });
+  elements.settingsModal.addEventListener("click", (event) => {
+    if (event.target === elements.settingsModal) {
+      closeSettingsModal();
+    }
+  });
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && settingsOpen) {
+      event.preventDefault();
+      closeSettingsModal();
+    }
+  });
 
   elements.prompt.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -57,7 +114,7 @@
   });
 
   function submitPrompt() {
-    if (state.busy) {
+    if (state.busy || state.canApprove || settingsOpen) {
       return;
     }
 
@@ -70,7 +127,7 @@
   }
 
   function continueRun() {
-    if (state.busy || !state.canContinue) {
+    if (state.busy || !state.canContinue || state.canApprove || settingsOpen) {
       return;
     }
 
@@ -79,21 +136,145 @@
     });
   }
 
+  function openSettingsModal() {
+    if (state.busy) {
+      return;
+    }
+
+    syncSettingsForm();
+    setSettingsModalOpen(true);
+    elements.settingsBaseUrl.focus();
+    render();
+  }
+
+  function closeSettingsModal() {
+    setSettingsModalOpen(false);
+    elements.settingsApiKey.value = "";
+    render();
+  }
+
+  function setSettingsModalOpen(isOpen) {
+    settingsOpen = Boolean(isOpen);
+    elements.settingsModal.hidden = !settingsOpen;
+    elements.settingsModal.setAttribute("aria-hidden", settingsOpen ? "false" : "true");
+  }
+
+  function syncSettingsForm() {
+    clearStoredApiKey = false;
+    elements.settingsBaseUrl.value = state.baseUrl || "";
+    elements.settingsModel.value = state.modelName || "";
+    elements.settingsIterationLimit.value = String(state.iterationLimit || 8);
+    elements.settingsAutoApplyChanges.checked = Boolean(state.autoApplyChanges);
+    elements.settingsApiKey.value = "";
+    elements.settingsClearApiKey.checked = false;
+    elements.settingsClearApiKeyRow.hidden = !state.hasStoredApiKey;
+    elements.settingsApiKey.placeholder = state.hasStoredApiKey
+      ? "Сохранен текущий ключ"
+      : "Необязателен для локальных endpoint";
+    elements.settingsApiKeyHint.textContent = state.hasStoredApiKey
+      ? "Поле можно оставить пустым, чтобы сохранить текущий ключ."
+      : "Если ваш endpoint требует Bearer token, введите ключ здесь.";
+  }
+
+  function saveSettings() {
+    if (state.busy) {
+      return;
+    }
+
+    const baseUrl = String(elements.settingsBaseUrl.value || "").trim();
+    const model = String(elements.settingsModel.value || "").trim();
+    const apiKey = String(elements.settingsApiKey.value || "");
+    const iterationLimit = Number(elements.settingsIterationLimit.value);
+    const autoApplyChanges = Boolean(elements.settingsAutoApplyChanges.checked);
+
+    if (!baseUrl) {
+      elements.settingsBaseUrl.setCustomValidity("Endpoint обязателен.");
+      elements.settingsBaseUrl.reportValidity();
+      elements.settingsBaseUrl.focus();
+      return;
+    }
+
+    try {
+      const parsed = new URL(baseUrl);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("invalid protocol");
+      }
+      elements.settingsBaseUrl.setCustomValidity("");
+    } catch (_error) {
+      elements.settingsBaseUrl.setCustomValidity("Введите корректный URL с http:// или https://");
+      elements.settingsBaseUrl.reportValidity();
+      elements.settingsBaseUrl.focus();
+      return;
+    }
+
+    if (!model) {
+      elements.settingsModel.setCustomValidity("Модель обязательна.");
+      elements.settingsModel.reportValidity();
+      elements.settingsModel.focus();
+      return;
+    }
+    elements.settingsModel.setCustomValidity("");
+
+    if (!Number.isFinite(iterationLimit) || iterationLimit < 1 || iterationLimit > 100) {
+      elements.settingsIterationLimit.setCustomValidity(
+        "Введите число от 1 до 100."
+      );
+      elements.settingsIterationLimit.reportValidity();
+      elements.settingsIterationLimit.focus();
+      return;
+    }
+    elements.settingsIterationLimit.setCustomValidity("");
+
+    vscode.postMessage({
+      type: "saveSettings",
+      settings: {
+        baseUrl,
+        model,
+        apiKey,
+        clearApiKey: clearStoredApiKey,
+        iterationLimit,
+        autoApplyChanges,
+      },
+    });
+
+    closeSettingsModal();
+  }
+
   function render() {
+    const inputLocked = state.busy || state.canApprove || settingsOpen;
     const shouldStickToBottom =
       elements.messages.scrollHeight -
         elements.messages.scrollTop -
         elements.messages.clientHeight <
       32;
 
-    elements.sendPrompt.disabled = state.busy;
-    elements.prompt.disabled = state.busy;
-    elements.continueRun.disabled = state.busy || !state.canContinue;
+    elements.sendPrompt.disabled = inputLocked;
+    elements.prompt.disabled = inputLocked;
+    elements.openSettings.disabled = state.busy;
+    elements.refreshContext.disabled = state.busy;
+    elements.clearChat.disabled = state.busy;
+    elements.continueRun.disabled =
+      state.busy || !state.canContinue || state.canApprove || settingsOpen;
+    elements.applyPendingChanges.disabled = state.busy || !state.canApprove || settingsOpen;
+    elements.rejectPendingChanges.disabled = state.busy || !state.canApprove || settingsOpen;
+    elements.saveSettings.disabled = state.busy;
     elements.status.textContent = state.status || "";
     elements.status.classList.toggle("busy", Boolean(state.status));
     elements.contextPreview.textContent = state.contextPreview || "";
+    elements.currentModel.textContent = state.modelName || "Модель не выбрана";
+    elements.currentEndpoint.textContent = formatEndpointLabel(state.baseUrl);
+    elements.apiKeyStatus.textContent = state.hasStoredApiKey
+      ? "API key сохранен"
+      : "API key не задан";
+    elements.approvalBanner.hidden = !state.canApprove;
+    elements.approvalText.textContent = state.approvalMessage || "";
     elements.continuationBanner.hidden = !state.canContinue;
     elements.continuationText.textContent = state.continuationMessage || "";
+    setSettingsModalOpen(settingsOpen);
+    elements.settingsClearApiKeyRow.hidden = !state.hasStoredApiKey;
+    elements.settingsBaseUrl.setCustomValidity("");
+    elements.settingsModel.setCustomValidity("");
+    elements.settingsIterationLimit.setCustomValidity("");
 
     const fragment = document.createDocumentFragment();
     if (state.messages.length === 0) {
@@ -118,6 +299,9 @@
     if (message.kind === "command") {
       return renderCommandMessage(message);
     }
+    if (message.kind === "change") {
+      return renderChangeMessage(message);
+    }
 
     const item = document.createElement("article");
     item.className = `message message-${message.role}`;
@@ -133,6 +317,64 @@
     item.appendChild(role);
     item.appendChild(body);
     return item;
+  }
+
+  function renderChangeMessage(message) {
+    const item = document.createElement("article");
+    item.className = `message change-block change-${message.status || "pending"}`;
+
+    const header = document.createElement("div");
+    header.className = "change-header";
+
+    const title = document.createElement("div");
+    title.className = "change-title";
+    title.textContent = message.title || "File change";
+
+    const badge = document.createElement("span");
+    badge.className = "change-badge";
+    badge.textContent = changeStatusLabel(message.status);
+
+    header.appendChild(title);
+    header.appendChild(badge);
+    item.appendChild(header);
+
+    if (message.summary) {
+      const summary = document.createElement("div");
+      summary.className = "change-summary";
+      summary.textContent = message.summary;
+      item.appendChild(summary);
+    }
+
+    if (message.path) {
+      const path = document.createElement("pre");
+      path.className = "change-path";
+      path.textContent = message.path;
+      item.appendChild(path);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "change-meta";
+
+    if (message.mode) {
+      meta.appendChild(renderChangeChip(changeModeLabel(message.mode)));
+    }
+
+    if (message.status) {
+      meta.appendChild(renderChangeChip(changeStatusLabel(message.status)));
+    }
+
+    if (meta.childNodes.length > 0) {
+      item.appendChild(meta);
+    }
+
+    return item;
+  }
+
+  function renderChangeChip(text) {
+    const chip = document.createElement("span");
+    chip.className = "change-chip";
+    chip.textContent = text;
+    return chip;
   }
 
   function renderCommandMessage(message) {
@@ -228,6 +470,23 @@
     return "INFO";
   }
 
+  function changeStatusLabel(status) {
+    if (status === "applied") {
+      return "APPLIED";
+    }
+    if (status === "rejected") {
+      return "REJECTED";
+    }
+    return "PENDING";
+  }
+
+  function changeModeLabel(mode) {
+    if (mode === "create") {
+      return "CREATE";
+    }
+    return "UPDATE";
+  }
+
   function roleLabel(role) {
     if (role === "assistant") {
       return "Agent";
@@ -236,6 +495,15 @@
       return "You";
     }
     return "System";
+  }
+
+  function formatEndpointLabel(baseUrl) {
+    try {
+      const parsed = new URL(baseUrl);
+      return `${parsed.host}${parsed.pathname}`;
+    } catch (_error) {
+      return String(baseUrl || "").trim() || "Endpoint не задан";
+    }
   }
 
   vscode.postMessage({ type: "ready" });

@@ -32,12 +32,9 @@ function activate(context) {
     vscode.commands.registerCommand("aiAgentAssistant.focusChat", async () => {
       await viewProvider.focus();
     }),
-    vscode.commands.registerCommand("aiAgentAssistant.setApiKey", async () => {
-      await openRouterClient.promptAndStoreApiKey();
-      await viewProvider.refreshContextPreview();
-    }),
-    vscode.commands.registerCommand("aiAgentAssistant.setIterationLimit", async () => {
-      await viewProvider.promptAndStoreIterationLimit();
+    vscode.commands.registerCommand("aiAgentAssistant.openSettings", async () => {
+      await viewProvider.focus();
+      await viewProvider.openSettings();
     }),
     vscode.commands.registerCommand("aiAgentAssistant.clearChat", () => {
       viewProvider.clearChat();
@@ -46,8 +43,13 @@ function activate(context) {
       await viewProvider.refreshContextPreview();
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration("aiAgentAssistant.agent.maxIterations")) {
-        viewProvider.reloadConfiguredIterationLimit();
+      if (
+        event.affectsConfiguration("aiAgentAssistant.agent.maxIterations") ||
+        event.affectsConfiguration("aiAgentAssistant.openRouter.model") ||
+        event.affectsConfiguration("aiAgentAssistant.openRouter.baseUrl") ||
+        event.affectsConfiguration("aiAgentAssistant.execution.autoApplyFileChanges")
+      ) {
+        viewProvider.reloadConfigurationState();
       }
     }),
     vscode.window.onDidChangeActiveTextEditor(async () => {

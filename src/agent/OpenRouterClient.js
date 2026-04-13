@@ -15,56 +15,111 @@ class OpenRouterClient {
     );
   }
 
-  async promptAndStoreApiKey() {
-    const current = await this.getApiKey();
-    const apiKey = await vscode.window.showInputBox({
-      title: "OpenRouter API Key",
-      prompt: "Введите OpenRouter API key. Ключ будет сохранен в VS Code Secret Storage.",
-      password: true,
-      ignoreFocusOut: true,
-      value: current,
-    });
+  async hasStoredApiKey() {
+    return Boolean(await this.getApiKey());
+  }
 
-    if (!apiKey) {
+  async storeApiKey(apiKey) {
+    const normalized = String(apiKey || "").trim();
+    if (!normalized) {
       return false;
     }
 
-    await this.secretStorage.store(SECRET_KEY, apiKey.trim());
-    vscode.window.showInformationMessage("OpenRouter API key сохранен.");
+    await this.secretStorage.store(SECRET_KEY, normalized);
     return true;
+  }
+
+  async clearApiKey() {
+    await this.secretStorage.delete(SECRET_KEY);
+  }
+
+  getConfiguredModel() {
+    return vscode.workspace
+      .getConfiguration("aiAgentAssistant")
+      .get("openRouter.model", "openai/gpt-5.2");
+  }
+
+  getConfiguredBaseUrl() {
+    return vscode.workspace
+      .getConfiguration("aiAgentAssistant")
+      .get("openRouter.baseUrl", "https://openrouter.ai/api/v1/chat/completions");
+  }
+
+  async saveConnectionSettings({ apiKey, model, baseUrl, clearApiKey }) {
+    const target = vscode.workspace.workspaceFolders?.length
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+
+    const normalizedModel = String(model || "").trim();
+    const normalizedBaseUrl = String(baseUrl || "").trim();
+
+    if (!normalizedModel) {
+      throw new Error("Модель не должна быть пустой.");
+    }
+
+    if (!normalizedBaseUrl) {
+      throw new Error("Endpoint не должен быть пустым.");
+    }
+
+    await vscode.workspace
+      .getConfiguration("aiAgentAssistant")
+      .update("openRouter.model", normalizedModel, target);
+
+    await vscode.workspace
+      .getConfiguration("aiAgentAssistant")
+      .update("openRouter.baseUrl", normalizedBaseUrl, target);
+
+    if (clearApiKey) {
+      await this.clearApiKey();
+    }
+
+    if (String(apiKey || "").trim()) {
+      await this.storeApiKey(apiKey);
+    }
+
+    return {
+      model: normalizedModel,
+      baseUrl: normalizedBaseUrl,
+      hasStoredApiKey: await this.hasStoredApiKey(),
+    };
   }
 
   async createChatCompletion({ messages, tools }) {
     const apiKey = await this.getApiKey();
-    if (!apiKey) {
-      throw new Error(
-        "OpenRouter API key не найден. Выполните команду 'AI Agent: Set OpenRouter API Key'."
-      );
-    }
-
     if (typeof fetch !== "function") {
       throw new Error("Глобальный fetch недоступен в extension host.");
     }
 
     const config = vscode.workspace.getConfiguration("aiAgentAssistant");
-    const model = config.get("openRouter.model", "openai/gpt-5.2");
-    const baseUrl = config.get(
-      "openRouter.baseUrl",
-      "https://openrouter.ai/api/v1/chat/completions"
-    );
+    const model = this.getConfiguredModel();
+    const baseUrl = this.getConfiguredBaseUrl();
     const timeoutMs = Number(config.get("openRouter.requestTimeoutMs", 120000));
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+      const headers = {
+        "Content-Type": "application/json",
+      };
+
+      if (apiKey) {
+        headers.Authorization = `Bearer ${apiKey}`;
+      }
+
+      if (isOpenRouterBaseUrl(baseUrl)) {
+        if (!apiKey) {
+          throw new Error(
+            "Для OpenRouter не найден API key. Откройте настройки ассистента и сохраните ключ."
+          );
+        }
+
+        headers["X-OpenRouter-Title"] = "VS Code AI Agent Assistant";
+      }
+
       const response = await fetch(baseUrl, {
         method: "POST",
         signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "X-OpenRouter-Title": "VS Code AI Agent Assistant",
-        },
+        headers,
         body: JSON.stringify({
           model,
           messages,
@@ -83,20 +138,18 @@ class OpenRouterClient {
           payload?.error?.message ||
           payload?.message ||
           raw ||
-          `OpenRouter returned HTTP ${response.status}`;
+          `LLM endpoint returned HTTP ${response.status}`;
         throw new Error(message);
       }
 
       if (!payload) {
-        throw new Error("OpenRouter вернул пустой ответ.");
+        throw new Error("LLM endpoint вернул пустой ответ.");
       }
 
       return payload;
     } catch (error) {
       if (error.name === "AbortError") {
-        throw new Error(
-          `Запрос к OpenRouter превысил timeout ${timeoutMs} мс.`
-        );
+        throw new Error(`Запрос к LLM endpoint превысил timeout ${timeoutMs} мс.`);
       }
 
       throw error;
@@ -111,6 +164,14 @@ function tryParseJson(raw) {
     return JSON.parse(raw);
   } catch (_error) {
     return undefined;
+  }
+}
+
+function isOpenRouterBaseUrl(baseUrl) {
+  try {
+    return new URL(baseUrl).hostname === "openrouter.ai";
+  } catch (_error) {
+    return String(baseUrl || "").includes("openrouter.ai");
   }
 }
 

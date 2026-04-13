@@ -1,5 +1,7 @@
 const vscode = require("vscode");
 const path = require("path");
+const os = require("os");
+const fs = require("fs/promises");
 const { spawn } = require("child_process");
 
 const DEFAULT_EXCLUDE =
@@ -43,6 +45,9 @@ class ToolExecutor {
     this.outputChannel = outputChannel;
     this.commandSessions = new Map();
     this.nextSessionId = 1;
+    this.nextPendingApprovalId = 1;
+    this.nextChangeId = 1;
+    this.pendingApproval = null;
     this.decoder = new TextDecoder("utf-8");
   }
 
@@ -121,6 +126,108 @@ class ToolExecutor {
     ];
   }
 
+  isDeferredFileChangeTool(name) {
+    return name === "write_file" || name === "replace_active_file";
+  }
+
+  getPendingApprovalSummary() {
+    if (!this.pendingApproval || this.pendingApproval.changes.length === 0) {
+      return "";
+    }
+
+    const fileList = this.pendingApproval.changes
+      .slice(0, 3)
+      .map((change) => change.path)
+      .join(", ");
+    const suffix =
+      this.pendingApproval.changes.length > 3
+        ? ` и еще ${this.pendingApproval.changes.length - 3}`
+        : "";
+
+    return `Подготовлено ${this.pendingApproval.changes.length} изменений: ${fileList}${suffix}. Проверьте diff и выберите, применять их или отклонить.`;
+  }
+
+  async applyPendingChanges() {
+    if (!this.pendingApproval) {
+      return {
+        count: 0,
+        files: [],
+        summary: "Ожидающих подтверждения изменений нет.",
+        displayMessages: [],
+      };
+    }
+
+    const session = this.pendingApproval;
+    this.pendingApproval = null;
+
+    try {
+      for (const change of session.changes) {
+        await this.writeTextToUri(change.targetUri, change.proposedContent);
+      }
+
+      const lastChange = session.changes.at(-1);
+      if (lastChange) {
+        await this.openTextDocument(lastChange.targetUri);
+      }
+
+      return {
+        count: session.changes.length,
+        files: session.changes.map((change) => change.path),
+        summary: `Применено ${session.changes.length} изменений.`,
+        displayMessages: session.changes.map((change) =>
+          createChangeDisplayMessage({
+            id: change.messageId,
+            title: change.title,
+            path: change.path,
+            mode: change.mode,
+            status: "applied",
+            summary: `Изменение применено: ${change.path}`,
+          })
+        ),
+      };
+    } finally {
+      await cleanupPendingApprovalSession(session);
+    }
+  }
+
+  async rejectPendingChanges() {
+    if (!this.pendingApproval) {
+      return {
+        count: 0,
+        files: [],
+        summary: "Ожидающих подтверждения изменений нет.",
+        displayMessages: [],
+      };
+    }
+
+    const session = this.pendingApproval;
+    this.pendingApproval = null;
+
+    try {
+      return {
+        count: session.changes.length,
+        files: session.changes.map((change) => change.path),
+        summary: `Отклонено ${session.changes.length} изменений.`,
+        displayMessages: session.changes.map((change) =>
+          createChangeDisplayMessage({
+            id: change.messageId,
+            title: change.title,
+            path: change.path,
+            mode: change.mode,
+            status: "rejected",
+            summary: `Изменение отклонено: ${change.path}`,
+          })
+        ),
+      };
+    } finally {
+      await cleanupPendingApprovalSession(session);
+    }
+  }
+
+  async clearPendingChanges() {
+    await this.rejectPendingChanges();
+  }
+
   async executeToolCall(toolCall, hooks = {}) {
     const name = toolCall?.function?.name;
     const id = toolCall?.id || toolCall?.toolCallId;
@@ -138,10 +245,10 @@ class ToolExecutor {
         result = await this.searchWorkspace(args);
         break;
       case "write_file":
-        result = await this.writeFile(args);
+        result = await this.writeFile(args, hooks);
         break;
       case "replace_active_file":
-        result = await this.replaceActiveFile(args);
+        result = await this.replaceActiveFile(args, hooks);
         break;
       case "run_shell_command":
         result = await this.runShellCommand(args, hooks);
@@ -167,6 +274,7 @@ class ToolExecutor {
       },
       summary: toolPayload.summary || `${name} выполнен.`,
       displayMessage,
+      requiresApproval: Boolean(toolPayload.requiresApproval),
     };
   }
 
@@ -242,47 +350,178 @@ class ToolExecutor {
     };
   }
 
-  async writeFile(args) {
+  async writeFile(args, hooks = {}) {
     const targetUri = await this.resolvePath(args.path);
-    const parentUri = vscode.Uri.file(path.dirname(targetUri.fsPath));
-    await vscode.workspace.fs.createDirectory(parentUri);
-    await vscode.workspace.fs.writeFile(
+    return this.handleFileMutation({
       targetUri,
-      Buffer.from(String(args.content || ""), "utf8")
-    );
-    await this.openTextDocument(targetUri);
-    return {
-      ok: true,
-      path: toWorkspacePath(targetUri),
-      summary: `Файл создан или обновлен: ${toWorkspacePath(targetUri)}`,
-    };
+      proposedContent: String(args.content || ""),
+      title: "File change",
+      hooks,
+    });
   }
 
-  async replaceActiveFile(args) {
+  async replaceActiveFile(args, hooks = {}) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       throw new Error("Нет активного редактора для replace_active_file.");
     }
 
-    const document = editor.document;
-    const fullRange = new vscode.Range(
-      document.positionAt(0),
-      document.positionAt(document.getText().length)
-    );
-
-    const success = await editor.edit((editBuilder) => {
-      editBuilder.replace(fullRange, String(args.content || ""));
+    return this.handleFileMutation({
+      targetUri: editor.document.uri,
+      proposedContent: String(args.content || ""),
+      title: "Active file change",
+      hooks,
     });
+  }
 
-    if (!success) {
-      throw new Error("Не удалось заменить содержимое активного файла.");
+  async handleFileMutation({ targetUri, proposedContent, title, hooks }) {
+    const current = await this.readExistingText(targetUri);
+    const pathLabel = toWorkspacePath(targetUri);
+    const mode = current.exists ? "update" : "create";
+
+    if (this.getAutoApplyFileChanges()) {
+      await this.writeTextToUri(targetUri, proposedContent);
+      await this.openTextDocument(targetUri);
+
+      return {
+        ok: true,
+        path: pathLabel,
+        summary: `Изменения автоматически применены: ${pathLabel}`,
+        displayMessage: createChangeDisplayMessage({
+          id: `file-change-auto-${this.nextChangeId++}`,
+          title,
+          path: pathLabel,
+          mode,
+          status: "applied",
+          summary: `Изменения применены автоматически: ${pathLabel}`,
+        }),
+      };
     }
 
+    const stagedChange = await this.stageFileChange({
+      targetUri,
+      pathLabel,
+      originalContent: current.content,
+      proposedContent,
+      mode,
+      title,
+    });
+
+    hooks.onEvent?.({
+      displayMessage: createChangeDisplayMessage({
+        id: stagedChange.messageId,
+        title: stagedChange.title,
+        path: stagedChange.path,
+        mode: stagedChange.mode,
+        status: "pending",
+        summary: `Открыт diff для проверки: ${stagedChange.path}`,
+      }),
+    });
+
     return {
-      ok: true,
-      path: toWorkspacePath(document.uri),
-      summary: `Полностью обновлен текущий файл ${toWorkspacePath(document.uri)}`,
+      ok: false,
+      requiresApproval: true,
+      pendingApproval: true,
+      path: stagedChange.path,
+      changeId: stagedChange.id,
+      summary: `Изменение подготовлено и ожидает подтверждения: ${stagedChange.path}`,
+      displayMessage: createChangeDisplayMessage({
+        id: stagedChange.messageId,
+        title: stagedChange.title,
+        path: stagedChange.path,
+        mode: stagedChange.mode,
+        status: "pending",
+        summary: `Изменение ожидает подтверждения: ${stagedChange.path}`,
+      }),
     };
+  }
+
+  async stageFileChange({
+    targetUri,
+    pathLabel,
+    originalContent,
+    proposedContent,
+    mode,
+    title,
+  }) {
+    const session = await this.ensurePendingApprovalSession();
+    const changeId = `change-${this.nextChangeId++}`;
+    const originalPath = path.join(session.tempDir, `${changeId}-original.txt`);
+    const proposedPath = path.join(session.tempDir, `${changeId}-proposed.txt`);
+
+    await fs.writeFile(originalPath, originalContent, "utf8");
+    await fs.writeFile(proposedPath, proposedContent, "utf8");
+
+    const change = {
+      id: changeId,
+      messageId: `file-change-${changeId}`,
+      title,
+      path: pathLabel,
+      targetUri,
+      originalContent,
+      proposedContent,
+      mode,
+      originalUri: vscode.Uri.file(originalPath),
+      proposedUri: vscode.Uri.file(proposedPath),
+    };
+
+    session.changes.push(change);
+
+    await vscode.commands.executeCommand(
+      "vscode.diff",
+      change.originalUri,
+      change.proposedUri,
+      `AI Agent Diff: ${change.path}`,
+      {
+        preview: false,
+      }
+    );
+
+    return change;
+  }
+
+  async ensurePendingApprovalSession() {
+    if (this.pendingApproval) {
+      return this.pendingApproval;
+    }
+
+    const tempDir = await fs.mkdtemp(
+      path.join(os.tmpdir(), `ai-agent-assistant-${this.nextPendingApprovalId}-`)
+    );
+    this.pendingApproval = {
+      id: this.nextPendingApprovalId++,
+      tempDir,
+      changes: [],
+    };
+    return this.pendingApproval;
+  }
+
+  async readExistingText(uri) {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return {
+        exists: true,
+        content: this.decoder.decode(bytes),
+      };
+    } catch (_error) {
+      return {
+        exists: false,
+        content: "",
+      };
+    }
+  }
+
+  getAutoApplyFileChanges() {
+    return Boolean(
+      vscode.workspace
+        .getConfiguration("aiAgentAssistant")
+        .get("execution.autoApplyFileChanges", false)
+    );
+  }
+
+  async writeTextToUri(uri, content) {
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(uri.fsPath)));
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(content, "utf8"));
   }
 
   async runShellCommand(args, hooks = {}) {
@@ -640,6 +879,18 @@ class ToolExecutor {
   }
 }
 
+async function cleanupPendingApprovalSession(session) {
+  if (!session?.tempDir) {
+    return;
+  }
+
+  try {
+    await fs.rm(session.tempDir, { recursive: true, force: true });
+  } catch (_error) {
+    return;
+  }
+}
+
 function toolDefinition(name, description, properties, required = []) {
   return {
     type: "function",
@@ -768,6 +1019,26 @@ function createCommandDisplayMessage({
     stderr: truncateForDisplay(stderr),
     output: truncateForDisplay(output),
     status: status || "info",
+    summary,
+  };
+}
+
+function createChangeDisplayMessage({
+  id,
+  title,
+  path: filePath,
+  mode,
+  status,
+  summary,
+}) {
+  return {
+    id,
+    role: "change",
+    kind: "change",
+    title,
+    path: filePath,
+    mode,
+    status,
     summary,
   };
 }
