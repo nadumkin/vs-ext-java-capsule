@@ -198,16 +198,98 @@ class MemoryManager {
     return result;
   }
 
+  aggregatePredictions(predictions) {
+    const empty = {
+      sampleSize: 0,
+      totalFailures: 0,
+      successCount: 0,
+      topExceptions: [],
+      commonFrames: [],
+    };
+    if (!Array.isArray(predictions) || predictions.length === 0) {
+      return empty;
+    }
+
+    const exceptionCounts = new Map();
+    const frameCounts = new Map();
+    let totalFailures = 0;
+    let successCount = 0;
+
+    for (const prediction of predictions) {
+      const value = prediction.value;
+      if (!value) {
+        continue;
+      }
+      if (value.success && (value.failures?.length || 0) === 0) {
+        successCount += 1;
+        continue;
+      }
+      for (const failure of value.failures || []) {
+        totalFailures += 1;
+        const exception = failure.exception || "Unknown";
+        exceptionCounts.set(exception, (exceptionCounts.get(exception) || 0) + 1);
+        for (const frame of failure.frames || []) {
+          const location = `${frame.class}.${frame.method}(${frame.location})`;
+          frameCounts.set(location, (frameCounts.get(location) || 0) + 1);
+        }
+      }
+    }
+
+    const topExceptions = [...exceptionCounts.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 3)
+      .map(([name, count]) => ({ name, count }));
+
+    const minFrameCount = Math.max(2, Math.ceil(predictions.length / 2));
+    const commonFrames = [...frameCounts.entries()]
+      .filter(([, count]) => count >= minFrameCount)
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, 5)
+      .map(([location, count]) => ({ location, count }));
+
+    return {
+      sampleSize: predictions.length,
+      totalFailures,
+      successCount,
+      topExceptions,
+      commonFrames,
+    };
+  }
+
   buildPredictionPromptText(predictions) {
     if (!Array.isArray(predictions) || predictions.length === 0) {
       return "";
     }
+
+    const aggregation = this.aggregatePredictions(predictions);
 
     const lines = [
       "[Memory of past similar changes]",
       "Найдены прошлые diff-ы, лексически похожие на только что применённый. Учти возможные падения тестов и поправь код, если применимо.",
       "",
     ];
+
+    if (aggregation.totalFailures > 0 || aggregation.successCount > 0) {
+      lines.push(
+        `Aggregated signal (top-K=${aggregation.sampleSize}): failed=${aggregation.totalFailures} across ${aggregation.sampleSize - aggregation.successCount} prior diff(s), success=${aggregation.successCount}.`
+      );
+      if (aggregation.topExceptions.length > 0) {
+        lines.push(
+          `- Most frequent exception types: ${aggregation.topExceptions
+            .map((item) => `${item.name} ×${item.count}`)
+            .join(", ")}.`
+        );
+      }
+      if (aggregation.commonFrames.length > 0) {
+        lines.push(
+          `- Frames recurring in ≥${Math.max(2, Math.ceil(aggregation.sampleSize / 2))}/${aggregation.sampleSize} matches:`
+        );
+        for (const frame of aggregation.commonFrames) {
+          lines.push(`    ${frame.location} ×${frame.count}`);
+        }
+      }
+      lines.push("");
+    }
 
     predictions.forEach((prediction, index) => {
       const components = prediction.components || {};

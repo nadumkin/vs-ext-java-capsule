@@ -228,11 +228,15 @@ class ToolExecutor {
       const promptHint = this.memoryManager.buildPredictionPromptText(
         outcome.predictions
       );
+      const aggregation = this.memoryManager.aggregatePredictions(
+        outcome.predictions
+      );
       const displayMessage = outcome.predictions.length
         ? createMemoryDisplayMessage({
             id: `memory-${outcome.queryId}`,
             title: "Предсказание по истории diff",
             predictions: outcome.predictions,
+            aggregation,
             summary: `Найдено ${outcome.predictions.length} похожих прошлых diff-ов.`,
           })
         : null;
@@ -1173,15 +1177,23 @@ function createChangeDisplayMessage({
   };
 }
 
-function createMemoryDisplayMessage({ id, title, predictions, summary }) {
+function createMemoryDisplayMessage({
+  id,
+  title,
+  predictions,
+  aggregation,
+  summary,
+}) {
   return {
     id,
     role: "memory",
     kind: "memory",
     title,
     summary,
+    aggregation: aggregation || null,
     predictions: (predictions || []).map((prediction) => ({
       score: prediction.score,
+      components: prediction.components || null,
       files: prediction.files || [],
       createdAt: prediction.createdAt || null,
       methods: prediction.methods || [],

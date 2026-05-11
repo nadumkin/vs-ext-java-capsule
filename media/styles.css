@@ -669,6 +669,48 @@ textarea {
   line-height: 1.45;
 }
 
+.memory-aggregation {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(167, 139, 250, 0.10);
+  border: 1px solid rgba(167, 139, 250, 0.22);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.memory-aggregation-head {
+  font-weight: 700;
+  color: #ddd6fe;
+  margin-bottom: 6px;
+}
+
+.memory-aggregation-row {
+  margin-top: 4px;
+}
+
+.memory-aggregation-frames {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-family:
+    "IBM Plex Mono",
+    "SFMono-Regular",
+    monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.memory-entry-meta {
+  margin-top: 2px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-family:
+    "IBM Plex Mono",
+    "SFMono-Regular",
+    monospace;
+}
+
 .memory-empty {
   padding: 8px 12px;
   border-radius: 12px;

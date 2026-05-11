@@ -410,6 +410,11 @@
       item.appendChild(summary);
     }
 
+    const aggregationNode = renderAggregation(message.aggregation);
+    if (aggregationNode) {
+      item.appendChild(aggregationNode);
+    }
+
     const predictions = message.predictions || [];
     if (predictions.length === 0) {
       const empty = document.createElement("div");
@@ -432,6 +437,21 @@
       const fileText = (prediction.files || []).join(", ") || "—";
       head.textContent = `${scoreText} • ${fileText}`;
       entry.appendChild(head);
+
+      const components = prediction.components;
+      if (components) {
+        const meta = document.createElement("div");
+        meta.className = "memory-entry-meta";
+        const parts = [];
+        if (components.bm25 !== undefined) parts.push(`bm25 ${components.bm25}`);
+        if (components.methods !== undefined) parts.push(`methods ${components.methods}`);
+        if (components.calls !== undefined) parts.push(`calls ${components.calls}`);
+        if (components.bytecode !== undefined) parts.push(`bytecode ${components.bytecode}`);
+        if (parts.length > 0) {
+          meta.textContent = parts.join(" • ");
+          entry.appendChild(meta);
+        }
+      }
 
       if (prediction.success) {
         const status = document.createElement("div");
@@ -485,6 +505,56 @@
       return "—";
     }
     return num.toFixed(2);
+  }
+
+  function renderAggregation(aggregation) {
+    if (!aggregation) {
+      return null;
+    }
+    const totalFailures = Number(aggregation.totalFailures || 0);
+    const successCount = Number(aggregation.successCount || 0);
+    const sampleSize = Number(aggregation.sampleSize || 0);
+    const topExceptions = aggregation.topExceptions || [];
+    const commonFrames = aggregation.commonFrames || [];
+
+    if (sampleSize === 0 || (totalFailures === 0 && successCount === 0)) {
+      return null;
+    }
+
+    const block = document.createElement("section");
+    block.className = "memory-aggregation";
+
+    const headLine = document.createElement("div");
+    headLine.className = "memory-aggregation-head";
+    headLine.textContent = `Сводка top-${sampleSize}: падений ${totalFailures} • успешных прогонов ${successCount}`;
+    block.appendChild(headLine);
+
+    if (topExceptions.length > 0) {
+      const excList = document.createElement("div");
+      excList.className = "memory-aggregation-row";
+      excList.textContent = `Частые типы исключений: ${topExceptions
+        .map((item) => `${item.name} ×${item.count}`)
+        .join(", ")}`;
+      block.appendChild(excList);
+    }
+
+    if (commonFrames.length > 0) {
+      const framesLabel = document.createElement("div");
+      framesLabel.className = "memory-aggregation-row";
+      framesLabel.textContent = "Общие фреймы (повторяются в большинстве совпадений):";
+      block.appendChild(framesLabel);
+
+      const framesList = document.createElement("ul");
+      framesList.className = "memory-aggregation-frames";
+      for (const frame of commonFrames) {
+        const li = document.createElement("li");
+        li.textContent = `${frame.location} ×${frame.count}`;
+        framesList.appendChild(li);
+      }
+      block.appendChild(framesList);
+    }
+
+    return block;
   }
 
   function renderCommandMessage(message) {
