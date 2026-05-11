@@ -227,6 +227,11 @@ body {
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(245, 158, 11, 0.08));
 }
 
+.continuation-banner[hidden],
+.approval-banner[hidden] {
+  display: none !important;
+}
+
 .approval-banner {
   display: flex;
   align-items: center;
@@ -617,6 +622,122 @@ textarea {
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 10px;
+}
+
+.memory-block {
+  border-radius: 20px;
+  padding: 14px;
+  background:
+    linear-gradient(180deg, rgba(30, 27, 75, 0.78), rgba(15, 23, 42, 0.74)),
+    var(--surface-elevated);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.08);
+}
+
+.memory-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.memory-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.memory-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(167, 139, 250, 0.18);
+  color: #ddd6fe;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.memory-summary {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.memory-empty {
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.memory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-entry {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.memory-entry-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.memory-status {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.memory-status-ok {
+  color: #86efac;
+}
+
+.memory-failure {
+  margin-top: 6px;
+}
+
+.memory-failure-head {
+  color: #fca5a5;
+  font-weight: 600;
+}
+
+.memory-failure-stack {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(248, 113, 113, 0.18);
+  font-family:
+    "IBM Plex Mono",
+    "SFMono-Regular",
+    monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.memory-more {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 button {

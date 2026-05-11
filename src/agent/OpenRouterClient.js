@@ -3,8 +3,9 @@ const vscode = require("vscode");
 const SECRET_KEY = "aiAgentAssistant.openRouter.apiKey";
 
 class OpenRouterClient {
-  constructor(secretStorage) {
+  constructor(secretStorage, outputChannel = null) {
     this.secretStorage = secretStorage;
+    this.outputChannel = outputChannel;
   }
 
   async getApiKey() {
@@ -84,6 +85,19 @@ class OpenRouterClient {
     };
   }
 
+  logRaw(label, status, raw) {
+    if (!this.outputChannel) {
+      return;
+    }
+    this.outputChannel.appendLine(
+      `[OpenRouterClient] ${label} (HTTP ${status})`
+    );
+    if (typeof raw === "string" && raw.length > 0) {
+      const snippet = raw.length > 4000 ? `${raw.slice(0, 4000)}\n…[truncated]` : raw;
+      this.outputChannel.appendLine(snippet);
+    }
+  }
+
   async createChatCompletion({ messages, tools }) {
     const apiKey = await this.getApiKey();
     if (typeof fetch !== "function") {
@@ -134,16 +148,35 @@ class OpenRouterClient {
       const payload = raw ? tryParseJson(raw) : undefined;
 
       if (!response.ok) {
-        const message =
-          payload?.error?.message ||
-          payload?.message ||
-          raw ||
-          `LLM endpoint returned HTTP ${response.status}`;
+        this.logRaw("error response", response.status, raw);
+        const message = buildErrorMessage({
+          status: response.status,
+          statusText: response.statusText,
+          payload,
+          raw,
+          model,
+          baseUrl,
+        });
         throw new Error(message);
       }
 
       if (!payload) {
         throw new Error("LLM endpoint вернул пустой ответ.");
+      }
+
+      const upstreamError = payload?.error || payload?.choices?.[0]?.error;
+      if (upstreamError) {
+        this.logRaw("upstream error in 200 OK", response.status, raw);
+        throw new Error(
+          buildErrorMessage({
+            status: response.status,
+            statusText: response.statusText,
+            payload,
+            raw,
+            model,
+            baseUrl,
+          })
+        );
       }
 
       return payload;
@@ -175,6 +208,74 @@ function isOpenRouterBaseUrl(baseUrl) {
   }
 }
 
+function buildErrorMessage({ status, statusText, payload, raw, model, baseUrl }) {
+  const error = payload?.error || payload?.choices?.[0]?.error || {};
+  const head =
+    error.message ||
+    payload?.message ||
+    (typeof raw === "string" && raw.length < 200 ? raw : "") ||
+    `LLM endpoint returned HTTP ${status}${statusText ? ` ${statusText}` : ""}`;
+
+  const parts = [head];
+  const detailParts = [];
+  if (status) {
+    detailParts.push(`HTTP ${status}${statusText ? ` ${statusText}` : ""}`);
+  }
+  if (error.code) {
+    detailParts.push(`code=${error.code}`);
+  }
+  if (error.type) {
+    detailParts.push(`type=${error.type}`);
+  }
+  if (model) {
+    detailParts.push(`model=${model}`);
+  }
+
+  const meta = error.metadata || {};
+  const metaParts = [];
+  if (meta.provider_name || meta.provider) {
+    metaParts.push(`provider=${meta.provider_name || meta.provider}`);
+  }
+  if (meta.reason) {
+    metaParts.push(`reason=${meta.reason}`);
+  }
+  if (typeof meta.raw === "string" && meta.raw.trim()) {
+    const trimmed = meta.raw.trim();
+    metaParts.push(
+      `raw=${trimmed.length > 240 ? `${trimmed.slice(0, 240)}…` : trimmed}`
+    );
+  } else if (meta.raw && typeof meta.raw === "object") {
+    const stringified = safeStringify(meta.raw);
+    metaParts.push(
+      `raw=${stringified.length > 240 ? `${stringified.slice(0, 240)}…` : stringified}`
+    );
+  }
+
+  if (detailParts.length) {
+    parts.push(`(${detailParts.join(", ")})`);
+  }
+  if (metaParts.length) {
+    parts.push(metaParts.join(" • "));
+  }
+
+  if (!error.message && !payload?.message && raw && raw.length >= 200) {
+    parts.push(
+      `Полный ответ виден в Output → AI Agent Assistant. Endpoint: ${baseUrl}`
+    );
+  }
+
+  return parts.join(" ");
+}
+
+function safeStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch (_error) {
+    return String(value);
+  }
+}
+
 module.exports = {
   OpenRouterClient,
+  buildErrorMessage,
 };

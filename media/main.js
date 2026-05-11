@@ -266,9 +266,13 @@
     elements.apiKeyStatus.textContent = state.hasStoredApiKey
       ? "API key сохранен"
       : "API key не задан";
-    elements.approvalBanner.hidden = !state.canApprove;
+    setBannerVisible(elements.approvalBanner, Boolean(state.canApprove), "flex");
     elements.approvalText.textContent = state.approvalMessage || "";
-    elements.continuationBanner.hidden = !state.canContinue;
+    setBannerVisible(
+      elements.continuationBanner,
+      Boolean(state.canContinue),
+      "flex"
+    );
     elements.continuationText.textContent = state.continuationMessage || "";
     setSettingsModalOpen(settingsOpen);
     elements.settingsClearApiKeyRow.hidden = !state.hasStoredApiKey;
@@ -301,6 +305,9 @@
     }
     if (message.kind === "change") {
       return renderChangeMessage(message);
+    }
+    if (message.kind === "memory") {
+      return renderMemoryMessage(message);
     }
 
     const item = document.createElement("article");
@@ -375,6 +382,109 @@
     chip.className = "change-chip";
     chip.textContent = text;
     return chip;
+  }
+
+  function renderMemoryMessage(message) {
+    const item = document.createElement("article");
+    item.className = "message memory-block";
+
+    const header = document.createElement("div");
+    header.className = "memory-header";
+
+    const title = document.createElement("div");
+    title.className = "memory-title";
+    title.textContent = message.title || "Memory";
+
+    const badge = document.createElement("span");
+    badge.className = "memory-badge";
+    badge.textContent = `TOP ${(message.predictions || []).length}`;
+
+    header.appendChild(title);
+    header.appendChild(badge);
+    item.appendChild(header);
+
+    if (message.summary) {
+      const summary = document.createElement("div");
+      summary.className = "memory-summary";
+      summary.textContent = message.summary;
+      item.appendChild(summary);
+    }
+
+    const predictions = message.predictions || [];
+    if (predictions.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "memory-empty";
+      empty.textContent = "Похожих прошлых diff-ов пока нет.";
+      item.appendChild(empty);
+      return item;
+    }
+
+    const list = document.createElement("ol");
+    list.className = "memory-list";
+
+    for (const prediction of predictions) {
+      const entry = document.createElement("li");
+      entry.className = "memory-entry";
+
+      const head = document.createElement("div");
+      head.className = "memory-entry-head";
+      const scoreText = `score ${formatScore(prediction.score)}`;
+      const fileText = (prediction.files || []).join(", ") || "—";
+      head.textContent = `${scoreText} • ${fileText}`;
+      entry.appendChild(head);
+
+      if (prediction.success) {
+        const status = document.createElement("div");
+        status.className = "memory-status memory-status-ok";
+        status.textContent = "Прошлый запуск: успех";
+        entry.appendChild(status);
+      }
+
+      const failures = prediction.failures || [];
+      for (const failure of failures.slice(0, 3)) {
+        const failureBlock = document.createElement("div");
+        failureBlock.className = "memory-failure";
+
+        const headerLine = document.createElement("div");
+        headerLine.className = "memory-failure-head";
+        headerLine.textContent = failure.message
+          ? `${failure.exception}: ${failure.message}`
+          : failure.exception;
+        failureBlock.appendChild(headerLine);
+
+        const frames = failure.frames || [];
+        if (frames.length > 0) {
+          const stack = document.createElement("pre");
+          stack.className = "memory-failure-stack";
+          stack.textContent = frames
+            .map((frame) => `at ${frame.class}.${frame.method}(${frame.location})`)
+            .join("\n");
+          failureBlock.appendChild(stack);
+        }
+
+        entry.appendChild(failureBlock);
+      }
+
+      if (failures.length > 3) {
+        const more = document.createElement("div");
+        more.className = "memory-more";
+        more.textContent = `... ещё ${failures.length - 3} падений.`;
+        entry.appendChild(more);
+      }
+
+      list.appendChild(entry);
+    }
+
+    item.appendChild(list);
+    return item;
+  }
+
+  function formatScore(value) {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      return "—";
+    }
+    return num.toFixed(2);
   }
 
   function renderCommandMessage(message) {
@@ -503,6 +613,18 @@
       return `${parsed.host}${parsed.pathname}`;
     } catch (_error) {
       return String(baseUrl || "").trim() || "Endpoint не задан";
+    }
+  }
+
+  function setBannerVisible(element, visible, displayValue) {
+    if (!element) {
+      return;
+    }
+    element.hidden = !visible;
+    if (visible) {
+      element.style.setProperty("display", displayValue, "important");
+    } else {
+      element.style.setProperty("display", "none", "important");
     }
   }
 

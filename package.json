@@ -140,11 +140,76 @@
           "default": 120000,
           "minimum": 1000,
           "description": "Timeout for shell and bash execution tools in milliseconds."
+        },
+        "aiAgentAssistant.memory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable QKV memory: lookup past similar diffs and inject predicted test failures before running real tests."
+        },
+        "aiAgentAssistant.memory.topK": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many top similar past diffs to retrieve as predictions."
+        },
+        "aiAgentAssistant.memory.storagePath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to the memory store JSON file. Empty means <workspace>/.aiAgentAssistant/memory/store.json."
+        },
+        "aiAgentAssistant.memory.java.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Java enrichment: full method signatures, workspace call graph (callers/callees) for affected methods."
+        },
+        "aiAgentAssistant.memory.java.bytecodeProbe": {
+          "type": "string",
+          "enum": ["auto", "off", "force"],
+          "default": "auto",
+          "description": "Whether to run javap on compiled classes to capture bytecode n-gram fingerprints. 'auto' = try if javap is in PATH; 'off' = disable; 'force' = require javap."
+        },
+        "aiAgentAssistant.memory.java.classOutputPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Workspace-relative paths where compiled .class files live. Empty means default Maven/Gradle/IntelliJ/Eclipse locations."
+        },
+        "aiAgentAssistant.memory.rerank.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "After BM25 lexical match, rerank candidates using Jaccard similarity over affected methods, callers/callees, and bytecode n-grams."
+        },
+        "aiAgentAssistant.memory.rerank.topN": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "How many BM25 candidates to consider in the reranking stage."
+        },
+        "aiAgentAssistant.memory.rerank.weights.bm25": {
+          "type": "number",
+          "default": 1.0,
+          "description": "Weight of the normalized BM25 score in the combined reranking formula."
+        },
+        "aiAgentAssistant.memory.rerank.weights.methods": {
+          "type": "number",
+          "default": 1.0,
+          "description": "Weight of Jaccard over affected-method signatures."
+        },
+        "aiAgentAssistant.memory.rerank.weights.calls": {
+          "type": "number",
+          "default": 0.7,
+          "description": "Weight of Jaccard over union of callers and callees."
+        },
+        "aiAgentAssistant.memory.rerank.weights.bytecode": {
+          "type": "number",
+          "default": 0.5,
+          "description": "Weight of Jaccard over bytecode n-gram fingerprints."
         }
       }
     }
   },
   "scripts": {
-    "validate": "node --check src/extension.js && node --check src/ui/AssistantViewProvider.js && node --check src/agent/AgentRuntime.js && node --check src/agent/ContextCollector.js && node --check src/agent/OpenRouterClient.js && node --check src/agent/ToolExecutor.js && node --check media/main.js"
+    "validate": "node --check src/extension.js && node --check src/ui/AssistantViewProvider.js && node --check src/agent/AgentRuntime.js && node --check src/agent/ContextCollector.js && node --check src/agent/OpenRouterClient.js && node --check src/agent/ToolExecutor.js && node --check src/memory/MemoryManager.js && node --check src/memory/MemoryStore.js && node --check src/memory/BM25Index.js && node --check src/memory/DiffNormalizer.js && node --check src/memory/StackTraceParser.js && node --check src/memory/JavaSourceParser.js && node --check src/memory/JavaEnricher.js && node --check src/memory/BytecodeFingerprint.js && node --check src/memory/Reranker.js && node --check media/main.js"
   }
 }

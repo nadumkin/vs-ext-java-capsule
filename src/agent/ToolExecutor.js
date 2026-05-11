@@ -41,8 +41,9 @@ const SEARCHABLE_EXTENSIONS = new Set([
 ]);
 
 class ToolExecutor {
-  constructor(outputChannel) {
+  constructor(outputChannel, memoryManager = null) {
     this.outputChannel = outputChannel;
+    this.memoryManager = memoryManager;
     this.commandSessions = new Map();
     this.nextSessionId = 1;
     this.nextPendingApprovalId = 1;
@@ -154,6 +155,7 @@ class ToolExecutor {
         files: [],
         summary: "Ожидающих подтверждения изменений нет.",
         displayMessages: [],
+        memory: null,
       };
     }
 
@@ -170,23 +172,122 @@ class ToolExecutor {
         await this.openTextDocument(lastChange.targetUri);
       }
 
+      const memory = await this.recordAppliedChanges(session.changes);
+      const displayMessages = session.changes.map((change) =>
+        createChangeDisplayMessage({
+          id: change.messageId,
+          title: change.title,
+          path: change.path,
+          mode: change.mode,
+          status: "applied",
+          summary: `Изменение применено: ${change.path}`,
+        })
+      );
+
+      if (memory?.displayMessage) {
+        displayMessages.push(memory.displayMessage);
+      }
+
       return {
         count: session.changes.length,
         files: session.changes.map((change) => change.path),
         summary: `Применено ${session.changes.length} изменений.`,
-        displayMessages: session.changes.map((change) =>
-          createChangeDisplayMessage({
-            id: change.messageId,
-            title: change.title,
-            path: change.path,
-            mode: change.mode,
-            status: "applied",
-            summary: `Изменение применено: ${change.path}`,
-          })
-        ),
+        displayMessages,
+        memory,
       };
     } finally {
       await cleanupPendingApprovalSession(session);
+    }
+  }
+
+  async recordAppliedChanges(changes) {
+    if (!this.memoryManager) {
+      this.outputChannel?.appendLine(
+        "[memory] recordAppliedChanges skipped: memoryManager is null"
+      );
+      return null;
+    }
+
+    try {
+      const payload = changes.map((change) => ({
+        path: change.path,
+        originalContent: change.originalContent,
+        proposedContent: change.proposedContent,
+      }));
+      this.outputChannel?.appendLine(
+        `[memory] recordAppliedChanges: payload files=[${payload.map((p) => p.path).join(",")}]`
+      );
+      const outcome = await this.memoryManager.recordPendingApply(payload);
+      if (!outcome?.queryId) {
+        this.outputChannel?.appendLine(
+          "[memory] recordPendingApply returned no queryId; skipping"
+        );
+        return null;
+      }
+
+      const promptHint = this.memoryManager.buildPredictionPromptText(
+        outcome.predictions
+      );
+      const displayMessage = outcome.predictions.length
+        ? createMemoryDisplayMessage({
+            id: `memory-${outcome.queryId}`,
+            title: "Предсказание по истории diff",
+            predictions: outcome.predictions,
+            summary: `Найдено ${outcome.predictions.length} похожих прошлых diff-ов.`,
+          })
+        : null;
+
+      return {
+        queryId: outcome.queryId,
+        predictions: outcome.predictions,
+        promptHint,
+        displayMessage,
+      };
+    } catch (error) {
+      this.outputChannel?.appendLine(
+        `[memory] recordPendingApply failed: ${error?.message || error}`
+      );
+      return null;
+    }
+  }
+
+  async noteTestExecution({ commandText, stdout, stderr, hooks }) {
+    if (!this.memoryManager) {
+      this.outputChannel?.appendLine(
+        "[memory] noteTestExecution skipped: memoryManager is null"
+      );
+      return;
+    }
+
+    this.outputChannel?.appendLine(
+      `[memory] noteTestExecution: command="${String(commandText || "").slice(0, 80)}" stdoutChars=${(stdout || "").length} stderrChars=${(stderr || "").length}`
+    );
+
+    try {
+      const outcome = await this.memoryManager.maybeRecordTestOutput({
+        commandText,
+        stdout,
+        stderr,
+      });
+      if (!outcome?.recorded) {
+        this.outputChannel?.appendLine(
+          "[memory] maybeRecordTestOutput returned recorded=false"
+        );
+        return;
+      }
+      this.outputChannel?.appendLine(
+        `[memory] recorded ${outcome.count} pair(s), success=${outcome.value?.success}`
+      );
+
+      hooks?.onEvent?.({
+        summary: outcome.value.success
+          ? `Memory: сохранён успешный результат для ${outcome.count} прошлых diff(ов).`
+          : `Memory: сохранены стек-трейсы (${outcome.summary || "падения"}) для ${outcome.count} прошлых diff(ов).`,
+      });
+    } catch (error) {
+      this.outputChannel?.appendLine(
+        `[memory] maybeRecordTestOutput failed: ${error?.message || error}`
+      );
     }
   }
 
@@ -383,10 +484,23 @@ class ToolExecutor {
       await this.writeTextToUri(targetUri, proposedContent);
       await this.openTextDocument(targetUri);
 
+      const memory = await this.recordAppliedChanges([
+        {
+          path: pathLabel,
+          originalContent: current.content,
+          proposedContent,
+        },
+      ]);
+
+      if (memory?.displayMessage) {
+        hooks.onEvent?.({ displayMessage: memory.displayMessage });
+      }
+
       return {
         ok: true,
         path: pathLabel,
         summary: `Изменения автоматически применены: ${pathLabel}`,
+        memoryPromptHint: memory?.promptHint || "",
         displayMessage: createChangeDisplayMessage({
           id: `file-change-auto-${this.nextChangeId++}`,
           title,
@@ -559,9 +673,17 @@ class ToolExecutor {
       commandText: command,
     });
 
+    await this.noteTestExecution({
+      commandText: command,
+      stdout: execution.stdout,
+      stderr: execution.stderr,
+      hooks,
+    });
+
     return {
       ...execution,
       displayMessage: createCommandDisplayMessage({
+        id: `command-session-${execution.sessionId}`,
         title: "Shell command",
         commandText: command,
         cwd: execution.cwd,
@@ -620,9 +742,17 @@ class ToolExecutor {
       commandText: script,
     });
 
+    await this.noteTestExecution({
+      commandText: script,
+      stdout: execution.stdout,
+      stderr: execution.stderr,
+      hooks,
+    });
+
     return {
       ...execution,
       displayMessage: createCommandDisplayMessage({
+        id: `command-session-${execution.sessionId}`,
         title: "Bash script",
         commandText: script,
         cwd: execution.cwd,
@@ -1040,6 +1170,32 @@ function createChangeDisplayMessage({
     mode,
     status,
     summary,
+  };
+}
+
+function createMemoryDisplayMessage({ id, title, predictions, summary }) {
+  return {
+    id,
+    role: "memory",
+    kind: "memory",
+    title,
+    summary,
+    predictions: (predictions || []).map((prediction) => ({
+      score: prediction.score,
+      files: prediction.files || [],
+      createdAt: prediction.createdAt || null,
+      methods: prediction.methods || [],
+      success: Boolean(prediction.value?.success),
+      failures: (prediction.value?.failures || []).slice(0, 5).map((failure) => ({
+        exception: failure.exception,
+        message: failure.message || "",
+        frames: (failure.frames || []).slice(0, 5).map((frame) => ({
+          class: frame.class,
+          method: frame.method,
+          location: frame.location,
+        })),
+      })),
+    })),
   };
 }
 

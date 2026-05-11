@@ -280,7 +280,9 @@ class AssistantViewProvider {
         : await this.runtime.rejectPendingChanges();
 
       for (const displayMessage of resolution.displayMessages || []) {
-        this.upsertMessage(this.createMessage("change", "", displayMessage));
+        this.upsertMessage(
+          this.createMessage(displayMessage.role || "system", "", displayMessage)
+        );
       }
 
       const systemText = approved
@@ -288,17 +290,27 @@ class AssistantViewProvider {
         : `Пользователь отклонил ${resolution.count} изменений.`;
       this.messages.push(this.createMessage("system", systemText));
 
+      const continuationMessages = [
+        ...(approvalState.messages || []),
+        {
+          role: "system",
+          content: approved
+            ? `The user approved and applied ${resolution.count} staged file changes.`
+            : "The user rejected the staged file changes. No file changes were applied.",
+        },
+      ];
+
+      const memoryHint = approved ? resolution.memory?.promptHint : "";
+      if (memoryHint) {
+        continuationMessages.push({
+          role: "system",
+          content: memoryHint,
+        });
+      }
+
       const continuationState = {
         contextPreview: approvalState.contextPreview || this.contextPreview,
-        messages: [
-          ...(approvalState.messages || []),
-          {
-            role: "system",
-            content: approved
-              ? `The user approved and applied ${resolution.count} staged file changes.`
-              : "The user rejected the staged file changes. No file changes were applied.",
-          },
-        ],
+        messages: continuationMessages,
       };
 
       await this.runAgentTurn({
@@ -306,8 +318,9 @@ class AssistantViewProvider {
         continuationState,
       });
     } catch (error) {
-      this.pendingApproval = approvalState;
-      this.approvalMessage = approvalMessage;
+      this.pendingContinuation = continuationState;
+      this.continuationMessage =
+        "Прошлый шаг агента завершился ошибкой. Нажмите «Продолжить», чтобы повторить вызов модели на том же контексте.";
       this.messages.push(
         this.createMessage(
           "assistant",
@@ -554,14 +567,14 @@ class AssistantViewProvider {
       <main id="messages" class="messages"></main>
 
       <footer class="composer">
-        <div id="approvalBanner" class="approval-banner" hidden>
+        <div id="approvalBanner" class="approval-banner" hidden style="display: none !important;">
           <div id="approvalText" class="approval-text"></div>
           <div class="banner-actions">
             <button id="rejectPendingChanges" class="ghost">Отклонить</button>
             <button id="applyPendingChanges" class="primary">Применить</button>
           </div>
         </div>
-        <div id="continuationBanner" class="continuation-banner" hidden>
+        <div id="continuationBanner" class="continuation-banner" hidden style="display: none !important;">
           <div id="continuationText" class="continuation-text"></div>
           <button id="continueRun" class="ghost highlight">Продолжить</button>
         </div>

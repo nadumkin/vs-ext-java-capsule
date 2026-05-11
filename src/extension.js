@@ -4,12 +4,14 @@ const { ContextCollector } = require("./agent/ContextCollector");
 const { OpenRouterClient } = require("./agent/OpenRouterClient");
 const { ToolExecutor } = require("./agent/ToolExecutor");
 const { AgentRuntime } = require("./agent/AgentRuntime");
+const { MemoryManager } = require("./memory/MemoryManager");
 
 function activate(context) {
   const outputChannel = vscode.window.createOutputChannel("AI Agent Assistant");
   const contextCollector = new ContextCollector(outputChannel);
-  const openRouterClient = new OpenRouterClient(context.secrets);
-  const toolExecutor = new ToolExecutor(outputChannel);
+  const openRouterClient = new OpenRouterClient(context.secrets, outputChannel);
+  const memoryManager = new MemoryManager(outputChannel);
+  const toolExecutor = new ToolExecutor(outputChannel, memoryManager);
   const runtime = new AgentRuntime({
     contextCollector,
     openRouterClient,
@@ -50,6 +52,9 @@ function activate(context) {
         event.affectsConfiguration("aiAgentAssistant.execution.autoApplyFileChanges")
       ) {
         viewProvider.reloadConfigurationState();
+      }
+      if (event.affectsConfiguration("aiAgentAssistant.memory.storagePath")) {
+        memoryManager.invalidate();
       }
     }),
     vscode.window.onDidChangeActiveTextEditor(async () => {

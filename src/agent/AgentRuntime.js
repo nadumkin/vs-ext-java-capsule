@@ -146,6 +146,8 @@ class AgentRuntime {
           "File changes may be staged for user approval before they are applied.",
           "Do not assume staged changes are already applied until a later system message confirms approval.",
           "Avoid destructive or risky actions unless they are clearly necessary.",
+          "After applying a change you may receive a system or tool message starting with '[Memory of past similar changes]'.",
+          "Treat that block as predicted failures from similar past diffs: read the stack traces, decide whether the current change has the same risk, and proactively patch the issue before running real tests.",
           "After tool usage, provide a concise final answer summarizing what changed and any next verification step.",
         ].join(" "),
       },
